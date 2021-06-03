@@ -49,7 +49,7 @@ class VarianceThreshold(SelectorMixin, BaseEstimator):
 
     def __init__(self, threshold=0.):
         if threshold < 0:
-            warnings.warn("Input threshold must be non-negative. Automatically set as zero.")
+            warnings.warn("Threshold must be non-negative. Automatically set as zero.")
             threshold = 0.
         self.threshold = threshold
 
