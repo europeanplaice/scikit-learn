@@ -41,6 +41,7 @@ from ..utils.validation import check_is_fitted
 from ..utils.validation import _check_sample_weight
 from ..utils.validation import has_fit_parameter
 from ..utils.validation import _num_samples
+import tensorflow as tf
 
 __all__ = [
     "AdaBoostClassifier",
@@ -137,11 +138,14 @@ class BaseWeightBoosting(BaseEnsemble, metaclass=ABCMeta):
         # Initializion of the random number instance that will be used to
         # generate a seed at each iteration
         random_state = check_random_state(self.random_state)
-
+        import datetime
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        writer = tf.summary.create_file_writer(
+            "logdir/" + current_time + "/" + str(self.n_estimators))
         for iboost in range(self.n_estimators):
             # Boosting step
             sample_weight, estimator_weight, estimator_error = self._boost(
-                iboost, X, y, sample_weight, random_state
+                iboost, X, y, sample_weight, random_state, writer
             )
 
             # Early termination
@@ -164,6 +168,18 @@ class BaseWeightBoosting(BaseEnsemble, metaclass=ABCMeta):
             if iboost < self.n_estimators - 1:
                 # Normalize
                 sample_weight /= sample_weight_sum
+                # assert np.sum(sample_weight) == 1.
+
+            with writer.as_default():
+                tf.summary.scalar("estimator_weight", estimator_weight, iboost)
+                tf.summary.scalar("estimator_error", estimator_error, iboost)
+                tf.summary.scalar("sample_weight_sum", sample_weight_sum, iboost)
+                tf.summary.scalar("sample_weight_mean", sample_weight.mean(), iboost)
+                tf.summary.scalar("sample_weight_std", sample_weight.std(), iboost)
+                tf.summary.scalar("sample_weight_sum2", sample_weight.sum(), iboost)
+                tf.summary.scalar("sample_weight_max", sample_weight.max(), iboost)
+                tf.summary.scalar("sample_weight_min", sample_weight.min(), iboost)
+                tf.summary.histogram("sample_weight", sample_weight, iboost)
 
         return self
 
@@ -1049,7 +1065,7 @@ class AdaBoostRegressor(RegressorMixin, BaseWeightBoosting):
         """Check the estimator and set the base_estimator_ attribute."""
         super()._validate_estimator(default=DecisionTreeRegressor(max_depth=3))
 
-    def _boost(self, iboost, X, y, sample_weight, random_state):
+    def _boost(self, iboost, X, y, sample_weight, random_state, writer):
         """Implement a single boost for regression
 
         Perform a single boost according to the AdaBoost.R2 algorithm and
@@ -1135,15 +1151,44 @@ class AdaBoostRegressor(RegressorMixin, BaseWeightBoosting):
                 self.estimators_.pop(-1)
             return None, None, None
 
+        # if hasattr(self, "previous_beta"):
+        #     beta = min(estimator_error / (1.0 - estimator_error), self.previous_beta)
+        # else:
+
         beta = estimator_error / (1.0 - estimator_error)
 
         # Boost weight using AdaBoost.R2 alg
         estimator_weight = self.learning_rate * np.log(1.0 / beta)
-
+        
+        # if not iboost == self.n_estimators - 1: 
+        #     sample_weight[sample_mask] *= np.power( 
+        #         beta, (1.0 - masked_error_vector) * self.learning_rate 
+        #     ) 
         if not iboost == self.n_estimators - 1:
-            sample_weight[sample_mask] *= np.power(
-                beta, (1.0 - masked_error_vector) * self.learning_rate
-            )
+            if hasattr(self, "previous_beta"):
+                if self.previous_beta > beta:
+                    sample_weight[sample_mask] *= np.power(
+                        beta, (1.0 - masked_error_vector) * self.learning_rate
+                    )
+                else:
+                    sample_weight[sample_mask] = 1 / len(sample_weight)
+            else:
+                sample_weight[sample_mask] *= np.power(
+                    beta, (1.0 - masked_error_vector) * self.learning_rate
+                )       
+
+        self.previous_beta = beta
+
+        with writer.as_default():
+            tf.summary.scalar("error_max", error_max, iboost)
+            tf.summary.scalar("len_sample_mask", len(sample_mask), iboost)
+            tf.summary.histogram("error_vect", error_vect, iboost)
+            tf.summary.histogram("masked_error_vector", masked_error_vector, iboost)
+            tf.summary.scalar("beta", beta, iboost)
+            tf.summary.scalar("learning_rate", self.learning_rate, iboost)
+            tf.summary.histogram("masked_sample_weight", masked_sample_weight, iboost)
+            tf.summary.histogram("bootstrap_idx", bootstrap_idx, iboost)
+
 
         return sample_weight, estimator_weight, estimator_error
 
